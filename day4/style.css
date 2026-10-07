@@ -1,0 +1,40 @@
+:root {
+  --bg: #ffffff;
+  --text: #222222;
+  --input-bg: #f4f4f4;
+  --border: #ccc;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, sans-serif;
+  padding: 24px;
+  transition: background 0.2s, color 0.2s;
+}
+
+body.dark {
+  --bg: #121212;
+  --text: #f0f0f0;
+  --input-bg: #1e1e1e;
+  --border: #333;
+}
+
+#note-text {
+  width: 100%;
+  min-height: 140px;
+  background: var(--input-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.warning {
+  color: orange;
+}
+
+.over {
+  color: red;
+  font-weight: bold;
+}
