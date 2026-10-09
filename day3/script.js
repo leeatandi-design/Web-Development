@@ -6,7 +6,7 @@ let notes = [
   { id: 5, text: "Call mum", category: "personal" },
 ];
 
-// 2. searchNotes using filter, toLowerCase and includes
+
 function searchNotes(word) {
   const lowerWord = word.toLowerCase();
   return notes.filter(note => note.text.toLowerCase().includes(lowerWord));
