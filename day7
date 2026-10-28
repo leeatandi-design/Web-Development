@@ -1,0 +1,76 @@
+#SnapShare - Photo Sharing App Scaling Plan (Day 7)
+
+## 1. Assumptions
+
+- Registered users: 10,000,000
+- Daily Active Users (DAU): 10% of registered = 0.10 \* 10,000,000 = **1,000,000 DAU**
+- Each active user: uploads 1 photo / day, views 50 feed pages / day
+- Average photo: 2 MB original, thumbnail 50 KB (0.05 MB)
+- 1 day ≈ 100,000 seconds (estimation trick)
+- Peak traffic = 5x average (evening spike)
+
+Calculated DAU: **1,000,000**
+
+## 2. Estimates
+
+### Uploads per second
+
+- Total uploads / day = DAU \* 1 = 1,000,000 uploads/day
+- Average: 1,000,000 / 100,000 = **10 uploads/sec**
+- Peak (5x): 10 \* 5 = **50 uploads/sec**
+
+### Feed views per second
+
+- Total feed views / day = DAU _ 50 = 1,000,000 _ 50 = 50,000,000 views/day
+- Average: 50,000,000 / 100,000 = **500 feed views/sec**
+- Peak (5x): 500 \* 5 = **2,500 feed views/sec**
+
+### Storage per year
+
+- Original photos per day: 1,000,000 \* 2 MB = 2,000,000 MB = 2 TB / day
+- Thumbnails per day: 1,000,000 \* 50 KB = 50,000,000 KB = 50 GB / day
+- Total new data per day: ~2.05 TB / day
+- Per year: 2.05 TB \* 365 = **~748 TB / year (~0.75 PB / year)**
+- With 3x replication for durability in object storage: ~2.24 PB / year logical
+
+## 3. Read-heavy vs Write-heavy
+
+**The system is heavily read-heavy (50:1 ratio).** 500 reads/sec vs 10 writes/sec.
+
+What this means for design: We must optimize for fast reads. We cannot hit the database for every feed view. We need a cache (Redis) for feeds, read replicas to scale reads, and a CDN for photos. Writes can be slower (async thumbnail generation).
+
+## 4. Why photos should NOT be stored inside the database
+
+Databases are designed for small structured rows and indexes, not large binary blobs (BLOBs). Storing 2MB files in MySQL/Postgres would bloat the DB, make backups extremely slow, kill query cache, and make it very expensive to scale. Instead photos should go to **Object Storage (like S3 / GCS)** which is built for unlimited files, is 10x cheaper, and serves files directly via CDN.
+
+## 5. Architecture Diagram (Text)
+
+## 6. Component Explanation (One sentence each)
+
+- **CDN:** Serves static photos, thumbnails, CSS and JS from edge servers close to the user to reduce latency and offload traffic from origin.
+- **Load Balancer:** Distributes incoming requests evenly across healthy stateless app servers and allows us to add/remove servers without downtime.
+- **App Servers (Stateless):** Handle API logic (auth, upload, feed) without storing user data in local memory so any server can handle any request.
+- **Cache (Redis):** Stores hot data like feed lists and user sessions in memory for ~10-100x faster reads than database.
+- **Database Primary:** Single source of truth that handles all writes (new users, photo metadata, follows) to ensure consistency.
+- **Database Read Replica:** Copy of primary that handles read queries (feed pagination) to scale read-heavy load without overloading primary.
+- **Object Storage (S3):** Durable, cheap, unlimited storage for actual 2MB photo files and 50KB thumbnails, not in DB.
+- **Queue + Worker (Thumbnail):** Queue decouples slow work; after upload, app enqueues a job and responds fast, worker in background creates 50KB thumbnail asynchronously.
+
+## 7. Step-by-step Upload Flow (including thumbnail job)
+
+1. User selects photo in app and hits Upload -> request goes via CDN -> Load Balancer -> App Server
+2. App Server authenticates user and generates a unique photo ID (UUID)
+3. App Server uploads original 2MB file directly to Object Storage (S3) with key `photos/{user_id}/{photo_id}.jpg`
+4. App Server writes metadata (photo_id, user_id, S3 URL, timestamp, caption) to DB Primary
+5. App Server enqueues a job `{"photo_id": "...", "s3_key": "..."}` to the Queue and invalidates user's feed cache in Redis
+6. App Server returns 200 OK to user immediately (photo is uploaded, thumbnail pending)
+7. Worker picks job from queue, downloads original from S3, generates 50KB thumbnail
+8. Worker uploads thumbnail to S3 with key `thumbs/{photo_id}.jpg`
+9. Worker updates DB Primary with thumbnail URL and deletes/updates the cached feed list in Redis so next read gets fresh data
+10. On next feed view, users get photo via CDN which caches S3 file at edge near them
+
+## 8. At least Two Trade-offs
+
+1. **Cache Invalidation vs Freshness vs Speed:** If we cache feed lists for 60 seconds, feeds are super fast but a user may not see a new post instantly. If we invalidate on every upload, data is fresh but cache hit rate drops and DB load increases. We choose TTL + invalidation for balance.
+2. **Synchronous vs Asynchronous Thumbnail Generation:** Doing thumbnail synchronously during upload would make upload slow and fail if processing fails. Doing it async via queue/worker makes upload fast and resilient but introduces eventual consistency (feed may show original for few seconds before thumbnail appears).
+3. **Read Replica Lag:** Read replica gives us cheap read scale, but it has replication lag (100ms-1s). A user who uploads and immediately refreshes might not see own photo if read goes to replica. We can mitigate by reading own recent uploads from primary or cache for that user (read-your-own-writes).
